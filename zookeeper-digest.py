@@ -122,6 +122,45 @@ class OpRequest(Op):
 class OpResponse(Op):
     pass
 
+class PingRequest(OpRequest):
+    def __init__(self, p):
+        pass
+
+    @staticmethod
+    def parse(p):
+        print("parsing PingRequest")
+        result = PingRequest(p)
+        def a(p): print("PingResponse"); return PingResponse(p)
+        addreq(p.src, p.xid, a)
+        return result
+
+    def deb(self):
+        return "PingRequest"
+
+class PingResponse(OpResponse):
+    def __init__(self, p):
+        pass
+
+    @staticmethod
+    def parse(p):
+        print("parsing PingResponse")
+        return PingResponse(p)
+
+    def deb(self):
+        return "PingResponse"
+
+class CloseSessionRequest(OpRequest):
+    def __init__(self, p):
+        pass
+
+    @staticmethod
+    def parse(p):
+        print("parsing CloseSessionRequest")
+        return CloseSessionRequest(p)
+
+    def deb(self):
+        return "CloseSessionRequest"
+
 class ConnectRequest(OpRequest):
     def __init__(self, p):
         self.protocol_version = p.read32()
@@ -238,12 +277,14 @@ class CreateRequest(OpRequest):
         dlen = p.peek32(plen + 4)
         acnt = p.peek32(plen + dlen + 8)
         alen = 0
+        base = plen + dlen + 12
         for i in xrange(acnt):
-            slen = p.peek32(4)
-            ilen = p.peek32(slen + 8)
+            slen = p.peek32(base + 4)
+            ilen = p.peek32(base + slen + 8)
             alen += slen + ilen + 12
+            base += alen
 
-        if not plen + dlen + alen + 16 == zklen - 8:
+        if not plen + dlen + alen + 16 == p.zklen - 8:
             return None
 
         result = CreateRequest(p)
@@ -326,7 +367,7 @@ class SetDataRequest(OpRequest):
         print("parsing SetDataRequest")
         plen = p.peek32(0)
         dlen = p.peek32(plen + 4)
-        if not plen + dlen + 8 == zklen - 8:
+        if not plen + dlen + 12 == p.zklen - 8:
             return None
 
         result = SetDataRequest(p)
@@ -421,13 +462,39 @@ class ZKPacket(Packet):
         else:
             self.flw = False
 
+        if self.zklen == 8:
+            self.xid = self.read32()
+            self.type = self.read32()
+            if self.type == OP_CLOSESESSION:
+                self.op = CloseSessionRequest.parse(self)
+                if self.op: return
+            elif self.xid == -2 and self.type == OP_PING:
+                self.op = PingRequest.parse(self)
+                if self.op: return
+            self.rollback_data()
+
         self.op = ConnectRequest.parse(self)
         if self.op: return
 
         self.op = ConnectResponse.parse(self)
         if self.op: return
 
+        global valid_errs
+
+        xid = self.peek32(0)
+        if peekresp(self.dst, xid): #known response?
+            print("parsing possible known response")
+            self.xid = self.read32()
+            self.zxid = self.read64()
+            self.err = self.read32()
+            if self.err in valid_errs:
+                self.op = getresp(self.dst, self.xid, self)
+                if self.op: return
+
+            self.rollback_data()
+
         global valid_ops
+        print("checking request")
         if self.peek32(4) in valid_ops: #request
             self.xid = self.read32()
             self.type = self.read32()
@@ -461,7 +528,6 @@ class ZKPacket(Packet):
             if self.op:
                 return
 
-        global valid_errs
         #response
         self.rollback_data()
         print("parsing response")
@@ -493,6 +559,12 @@ def getresp(addr, xid, p):
         print("xid %d != %d" % (req_xid, xid))
     return func(p)
 
+def peekresp(addr, xid):
+    print("peekresp %s %d" % (addr, xid))
+    sess = sessions_by_addr.get(addr)
+    if not sess: return False
+    return xid == sess.peekxid()
+
 class Session(object):
     def __init__(self):
         self.xids_pending = []
@@ -502,6 +574,12 @@ class Session(object):
 
     def popxid(self):
         return self.xids_pending.pop(0)
+
+    def peekxid(self):
+        if len(self.xids_pending):
+            print("peekxid %d" % (self.xids_pending[0][0]))
+            return self.xids_pending[0][0]
+        return -1000
 
 sessions_by_addr = {}        
 
@@ -515,9 +593,12 @@ S_CLOSED = 4
 def process(p):
     if not p: return
     if p.tcplen == 0: return
-    p.prep()
-    p.determine_type()
-    print("determined type: %s" % (p.deb()))
+    try:
+        p.prep()
+        p.determine_type()
+        print("determined type: %s" % (p.deb()))
+    except Exception as e:
+        print("unable to process frame %s" % (str(e)))
 
 if __name__ == '__main__':
     header_re = re.compile(r"(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) IP (\d+\.\d+.\d+.\d+\.\d+) > (\d+\.\d+.\d+.\d+\.\d+): tcp (\d+)\s*", re.I)
