@@ -18,6 +18,10 @@ h2. Overview
 
 Capture information from a ZooKeeper cluster and this tool will output an analysis of the interactions/operations.
 
+h2. License
+
+This project is licensed under the Apache License Version 2.0
+
 h2. Requirements
 
 * "tcpdump":http://www.tcpdump.org/
