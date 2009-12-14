@@ -40,33 +40,33 @@ parser.add_option("", "--summary",
 
 outstanding_reqs = {}
 
-class ZooKeeperRequest(Packet):
+class ZKReq(Packet):
     fields_desc=[ SignedIntField("len", 0) ]
 
     def guess_payload_class(self, payload):
         if len(payload) >= 28:
-            n = ConnectRequest(_pkt=payload)
+            n = ZKConnectReq(_pkt=payload)
             if (n.protocolVersion == 0 and n.timeout >= 0 and n.len_passwd == 16):
-                return ConnectRequest
+                return ZKConnectReq
 
-        return ZooKeeperRequestType
+        return ZKReqType
 
-bind_layers( TCP, ZooKeeperRequest, dport=2181 )
+bind_layers( TCP, ZKReq, dport=2181 )
 
-class ZooKeeperResponse(Packet):
+class ZKResp(Packet):
     fields_desc=[ SignedIntField("len", 0) ]
 
     def guess_payload_class(self, payload):
         if len(payload) >= 20:
-            n = ConnectResponse(_pkt=payload)
+            n = ZKConnectResp(_pkt=payload)
             if (n.protocolVersion == 0 and n.timeout >= 0 and n.len_passwd == 16):
-                return ConnectResponse
+                return ZKConnectResp
 
-        return ZooKeeperReplyType
+        return ZKReplyType
 
-bind_layers( TCP, ZooKeeperResponse, sport=2181 )
+bind_layers( TCP, ZKResp, sport=2181 )
 
-class ConnectRequest(Packet):
+class ZKConnectReq(Packet):
     fields_desc=[ SignedIntField("protocolVersion", 0),
                   XLongField("lastZxidSeen", 0),
                   SignedIntField("timeout", 30000),
@@ -74,18 +74,29 @@ class ConnectRequest(Packet):
                   FieldLenField("len_passwd", None, fmt="I", length_of="passwd"),
                   StrLenField("passwd", "", length_from=lambda pkt:pkt.len_passwd) ]
 
-class ConnectResponse(Packet):
+    def mysummary(self):
+        return self.sprintf("ZKConnectReq %ZKConnectReq.lastZxidSeen% %ZKConnectReq.timeout% %ZKConnectReq.sessionId%")
+
+class ZKConnectResp(Packet):
     fields_desc=[ SignedIntField("protocolVersion", 0),
                   SignedIntField("timeout", 30000),
                   XLongField("sessionId", 0),
                   FieldLenField("len_passwd", None, fmt="I", length_of="passwd"),
                   StrLenField("passwd", "", length_from=lambda pkt:pkt.len_passwd) ]
 
-class ZooKeeperRequestType(Packet):
-    fields_desc=[ SignedIntEnumField("xid", 0, {-1:"NOTIFICATION", -2:"PING", -4:"AUTH"}),
-                  SignedIntField("type", 0) ]
+    def mysummary(self):
+        return self.sprintf("ZKConnectResp %ZKConnectResp.timeout% %ZKConnectResp.sessionId%")
 
-class ZooKeeperReplyType(Packet):
+class ZKReqType(Packet):
+    fields_desc=[ SignedIntEnumField("xid", 0, {-1:"NOTIFICATION", -2:"PING", -4:"AUTH"}),
+                  SignedIntEnumField("type", 0, {0:"EVENT",1:"CREATE",
+                      2:"DELETE",3:"EXISTS",4:"GETDATA",5:"SETDATA",8:"GETCHILD",
+                      11:"PING",12:"GETCHILD2"}) ]
+
+    def mysummary(self):
+        return self.sprintf("ZKReqType %ZKReqType.type%")
+
+class ZKReplyType(Packet):
     fields_desc=[ SignedIntEnumField("xid", 0, {-1:"NOTIFICATION", -2:"PING", -4:"AUTH"}),
                   XLongField("zxid", 0),
                   SignedIntField("err", 0) ]
@@ -93,17 +104,24 @@ class ZooKeeperReplyType(Packet):
     def guess_payload_class(self, payload):
         req = outstanding_reqs.get(self.xid, None)
         if req:
-            return req.payload.reply_type() 
+            self.type = req.sprintf("%ZKReqType.type%")
+            return req.payload.reply_type()
 
-class GetDataRequest(Packet):
+    def mysummary(self):
+        if not getattr(self, 'type', None):
+            if self.xid == -2:
+                self.type = "PING"
+        return self.sprintf("ZKReplyType %ZKReplyType.type%")
+
+class GetDataReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path),
                   ByteField("watch", 0) ]
 
     def reply_type(self):
-        return GetDataResponse
+        return GetDataResp
 
-class SetDataRequest(Packet):
+class SetDataReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path),
                   FieldLenField("len_data", None, fmt="I", length_of="data"),
@@ -111,15 +129,15 @@ class SetDataRequest(Packet):
                   SignedIntField("version", 0) ]
 
     def reply_type(self):
-        return SetDataResponse
+        return SetDataResp
 
-class ExistsRequest(Packet):
+class ExistsReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path),
                   ByteField("watch", 0) ]
 
     def reply_type(self):
-        return ExistsResponse
+        return ExistsResp
 
 class Acl(Packet):
     fields_desc=[ SignedIntField("perms", 0),
@@ -132,7 +150,7 @@ class Acl(Packet):
     def extract_padding(self, pay):
         return "",pay
 
-class CreateRequest(Packet):
+class CreateReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path),
                   FieldLenField("len_data", None, fmt="I", length_of="data"),
@@ -142,31 +160,31 @@ class CreateRequest(Packet):
                   SignedIntField("flags", 0) ]
 
     def reply_type(self):
-        return ExistsResponse
+        return ExistsResp
 
-class DeleteRequest(Packet):
+class DeleteReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path),
                   SignedIntField("version", 0) ]
 
     def reply_type(self):
-        return DeleteResponse
+        return DeleteResp
 
-class GetChildrenRequest(Packet):
+class GetChildrenReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path),
                   ByteField("watch", 0) ]
 
     def reply_type(self):
-        return GetChildrenResponse
+        return GetChildrenResp
 
-class GetChildren2Request(Packet):
+class GetChildren2Req(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path),
                   ByteField("watch", 0) ]
 
     def reply_type(self):
-        return GetChildren2Response
+        return GetChildren2Resp
 
 class WatcherEvent(Packet):
     fields_desc=[ SignedIntField("type", 0),
@@ -174,23 +192,23 @@ class WatcherEvent(Packet):
                   FieldLenField("len_path", None, fmt="I", length_of="path"),
                   StrLenField("path", "", length_from=lambda pkt:pkt.len_path) ]
 
-bind_layers( ZooKeeperRequestType, WatcherEvent, type=0 )
-bind_layers( ZooKeeperRequestType, CreateRequest, type=1 )
-bind_layers( ZooKeeperRequestType, DeleteRequest, type=2 )
-bind_layers( ZooKeeperRequestType, ExistsRequest, type=3 )
-bind_layers( ZooKeeperRequestType, GetDataRequest, type=4 )
-bind_layers( ZooKeeperRequestType, SetDataRequest, type=5 )
-bind_layers( ZooKeeperRequestType, GetChildrenRequest, type=8 )
-bind_layers( ZooKeeperRequestType, GetChildren2Request, type=12 )
+bind_layers( ZKReqType, WatcherEvent, type=0 )
+bind_layers( ZKReqType, CreateReq, type=1 )
+bind_layers( ZKReqType, DeleteReq, type=2 )
+bind_layers( ZKReqType, ExistsReq, type=3 )
+bind_layers( ZKReqType, GetDataReq, type=4 )
+bind_layers( ZKReqType, SetDataReq, type=5 )
+bind_layers( ZKReqType, GetChildrenReq, type=8 )
+bind_layers( ZKReqType, GetChildren2Req, type=12 )
 
-class GetDataResponse(Packet):
+class GetDataResp(Packet):
     fields_desc=[ FieldLenField("len_data", None, fmt="I", length_of="data"),
                   StrLenField("data", "", length_from=lambda pkt:pkt.len_data) ]
 
-class SetDataResponse(Packet):
+class SetDataResp(Packet):
     pass
 
-class DeleteResponse(Packet):
+class DeleteResp(Packet):
     pass
 
 class Child(Packet):
@@ -200,12 +218,12 @@ class Child(Packet):
     def extract_padding(self, pay):
         return "",pay
 
-class GetChildrenResponse(Packet):
+class GetChildrenResp(Packet):
     fields_desc=[ FieldLenField("count_children", None, fmt="I", count_of="children"),
                   PacketListField("children", None, Child,
                                   count_from=lambda pkt:pkt.count_children) ]
 
-class GetChildren2Response(GetChildrenResponse):
+class GetChildren2Resp(GetChildrenResp):
     pass
 
 class Stat(Packet):
@@ -221,9 +239,9 @@ class Stat(Packet):
                   SignedIntField("numChildren", 0),
                   XLongField("pzxid", 0) ]
 
-bind_layers( GetDataResponse, Stat )
-bind_layers( SetDataResponse, Stat )
-bind_layers( GetChildren2Response, Stat )
+bind_layers( GetDataResp, Stat )
+bind_layers( SetDataResp, Stat )
+bind_layers( GetChildren2Resp, Stat )
 
 if __name__ == '__main__':
     if options.read:
@@ -233,7 +251,7 @@ if __name__ == '__main__':
         while 1:
             p=s.recv(MTU)
             if p:
-                req = p[ZooKeeperRequestType]
+                req = p[ZKReqType]
                 if req:
                     outstanding_reqs[req.xid] = req
                 if options.summary: print(p.summary())
