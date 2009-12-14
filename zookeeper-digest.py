@@ -104,6 +104,7 @@ class ZKReplyType(Packet):
     def guess_payload_class(self, payload):
         req = outstanding_reqs.get(self.xid, None)
         if req:
+            del outstanding_reqs[self.xid]
             self.type = req.sprintf("%ZKReqType.type%")
             return req.payload.reply_type()
 
