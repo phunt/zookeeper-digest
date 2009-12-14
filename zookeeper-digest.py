@@ -102,9 +102,11 @@ class ZKReplyType(Packet):
                   SignedIntField("err", 0) ]
 
     def guess_payload_class(self, payload):
-        req = outstanding_reqs.get(self.xid, None)
+        dst = self.underlayer.underlayer.underlayer.dst
+        dport = self.underlayer.underlayer.dport
+        req = outstanding_reqs.get((dst, dport, self.xid), None)
         if req:
-            del outstanding_reqs[self.xid]
+            del outstanding_reqs[dst, dport, self.xid]
             self.type = req.sprintf("%ZKReqType.type%")
             return req.payload.reply_type()
 
@@ -254,7 +256,7 @@ if __name__ == '__main__':
             if p:
                 req = p[ZKReqType]
                 if req:
-                    outstanding_reqs[req.xid] = req
+                    outstanding_reqs[p[IP].src,p[TCP].sport,req.xid] = req
                 if options.summary: print(p.summary())
                 elif options.show: print(p.show())
     elif options.interface:
