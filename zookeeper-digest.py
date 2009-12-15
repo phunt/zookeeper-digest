@@ -16,6 +16,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# more information from scapy
+#import logging
+#logging.getLogger("scapy").setLevel(logging.DEBUG)
+
 from scapy.all import *
 
 from optparse import OptionParser
@@ -24,6 +28,7 @@ usage = "usage: %prog [options]"
 parser = OptionParser(usage=usage)
 parser.add_option("", "--servers", dest="servers",
                   default="localhost:2181", help="comma separated list of host:port")
+
 parser.add_option("-i", "--intf", dest="interface",
                   default=None, help="interface from which to read packets")
 parser.add_option("-r", "--read", dest="read",
@@ -36,9 +41,14 @@ parser.add_option("", "--summary",
                   action="store_true", dest="summary", default=False,
                   help="show summary packet detail")
 
+parser.add_option("", "--debug",
+                  action="store_true", dest="debug", default=False,
+                  help="show all pkts")
+
 (options, args) = parser.parse_args()
 
 outstanding_reqs = {}
+sessionids = {}
 
 class ZKReq(Packet):
     fields_desc=[ SignedIntField("len", 0) ]
@@ -51,6 +61,11 @@ class ZKReq(Packet):
 
         return ZKReqType
 
+    def mysummary(self):
+        src = self.underlayer.underlayer.src
+        sport = self.underlayer.sport
+        return self.sprintf("ZKReq  < %s:%s" % (str(src), str(sport)))
+
 bind_layers( TCP, ZKReq, dport=2181 )
 
 class ZKResp(Packet):
@@ -62,7 +77,12 @@ class ZKResp(Packet):
             if (n.protocolVersion == 0 and n.timeout >= 0 and n.len_passwd == 16):
                 return ZKConnectResp
 
-        return ZKReplyType
+        return ZKRespType
+
+    def mysummary(self):
+        dst = self.underlayer.underlayer.dst
+        dport = self.underlayer.dport
+        return self.sprintf("ZKResp > %s:%s" % (str(dst), str(dport)))
 
 bind_layers( TCP, ZKResp, sport=2181 )
 
@@ -75,7 +95,7 @@ class ZKConnectReq(Packet):
                   StrLenField("passwd", "", length_from=lambda pkt:pkt.len_passwd) ]
 
     def mysummary(self):
-        return self.sprintf("ZKConnectReq %ZKConnectReq.lastZxidSeen% %ZKConnectReq.timeout% %ZKConnectReq.sessionId%")
+        return self.sprintf("ZKConnectReq %ZKConnectReq.lastZxidSeen% %ZKConnectReq.timeout% %ZKConnectReq.sessionId%"),[ZKReq]
 
 class ZKConnectResp(Packet):
     fields_desc=[ SignedIntField("protocolVersion", 0),
@@ -85,18 +105,18 @@ class ZKConnectResp(Packet):
                   StrLenField("passwd", "", length_from=lambda pkt:pkt.len_passwd) ]
 
     def mysummary(self):
-        return self.sprintf("ZKConnectResp %ZKConnectResp.timeout% %ZKConnectResp.sessionId%")
+        return self.sprintf("ZKConnectResp %ZKConnectResp.timeout% %ZKConnectResp.sessionId%"),[ZKResp]
 
 class ZKReqType(Packet):
     fields_desc=[ SignedIntEnumField("xid", 0, {-1:"NOTIFICATION", -2:"PING", -4:"AUTH"}),
-                  SignedIntEnumField("type", 0, {0:"EVENT",1:"CREATE",
+                  SignedIntEnumField("type", 0, {-11:"CLOSE",0:"EVENT",1:"CREATE",
                       2:"DELETE",3:"EXISTS",4:"GETDATA",5:"SETDATA",8:"GETCHILD",
                       11:"PING",12:"GETCHILD2"}) ]
 
     def mysummary(self):
-        return self.sprintf("ZKReqType %ZKReqType.type%")
+        return self.sprintf("ZKReqType 0x%x,sessionId%L %ZKReqType.type%"),[ZKReq]
 
-class ZKReplyType(Packet):
+class ZKRespType(Packet):
     fields_desc=[ SignedIntEnumField("xid", 0, {-1:"NOTIFICATION", -2:"PING", -4:"AUTH"}),
                   XLongField("zxid", 0),
                   SignedIntField("err", 0) ]
@@ -114,7 +134,14 @@ class ZKReplyType(Packet):
         if not getattr(self, 'type', None):
             if self.xid == -2:
                 self.type = "PING"
-        return self.sprintf("ZKReplyType %ZKReplyType.type%")
+            else:
+                dst = self.underlayer.underlayer.underlayer.dst
+                dport = self.underlayer.underlayer.dport
+                req = outstanding_reqs.get((dst, dport, self.xid), None)
+                if req:
+                    del outstanding_reqs[dst, dport, self.xid]
+                    self.type = req.sprintf("%ZKReqType.type%")
+        return self.sprintf("ZKRespType 0x%x,sessionId%L %ZKRespType.type%"),[ZKResp]
 
 class GetDataReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
@@ -246,19 +273,51 @@ bind_layers( GetDataResp, Stat )
 bind_layers( SetDataResp, Stat )
 bind_layers( GetChildren2Resp, Stat )
 
+def process_req(p):
+    if options.debug:
+        if options.summary: print(p.summary())
+        elif options.show: print(p.show())
+
+    
+    if p.haslayer(ZKReqType):
+        reqType = p.getlayer(ZKReqType)
+        outstanding_reqs[p[IP].src,p[TCP].sport,reqType.xid] = reqType
+        try:
+            reqType.sessionId = sessionids[reqType.underlayer.underlayer.underlayer.src,
+                                           reqType.underlayer.underlayer.sport]
+        except:
+            pass
+    elif p.haslayer(ZKRespType):
+        respType = p.getlayer(ZKRespType)
+        try:
+            respType.sessionId = sessionids[respType.underlayer.underlayer.underlayer.dst,
+                                            respType.underlayer.underlayer.dport]
+        except:
+            pass
+    elif p.haslayer(ZKConnectResp):
+        cresp = p.getlayer(ZKConnectResp)
+        sessionids[cresp.underlayer.underlayer.underlayer.dst,
+                   cresp.underlayer.underlayer.dport] = cresp.sessionId
+
+    if p.haslayer(ZKReq) or p.haslayer(ZKResp) or options.debug:
+        if options.summary: print(p.summary())
+        elif options.show: print(p.show())
+
 if __name__ == '__main__':
     if options.read:
         pkts = rdpcap(options.read)
+        for p in pkts:
+            process_req(p)
     elif options.interface == 'lo':
-        s=conf.L3socket(iface=options.interface, filter="tcp and ( port 2181 )")
+        s=conf.L3socket(iface=options.interface)
         while 1:
             p=s.recv(MTU)
-            if p:
-                req = p[ZKReqType]
-                if req:
-                    outstanding_reqs[p[IP].src,p[TCP].sport,req.xid] = req
-                if options.summary: print(p.summary())
-                elif options.show: print(p.show())
+            if not p: continue
+
+            if not p.sprintf("%TCP.sport%") == "2181" and not p.sprintf("%TCP.dport%") == "2181":
+                continue
+
+            process_req(p)
     elif options.interface:
         sniff(iface=options.interface, filter="tcp and ( port 2181 )",
-              prn=lambda p: p.summary())
+              prn=lambda p: process_req(p))
