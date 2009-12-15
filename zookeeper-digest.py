@@ -66,8 +66,6 @@ class ZKReq(Packet):
         sport = self.underlayer.sport
         return self.sprintf("ZKReq  < %s:%s" % (str(src), str(sport)))
 
-bind_layers( TCP, ZKReq, dport=2181 )
-
 class ZKResp(Packet):
     fields_desc=[ SignedIntField("len", 0) ]
 
@@ -83,8 +81,6 @@ class ZKResp(Packet):
         dst = self.underlayer.underlayer.dst
         dport = self.underlayer.dport
         return self.sprintf("ZKResp > %s:%s" % (str(dst), str(dport)))
-
-bind_layers( TCP, ZKResp, sport=2181 )
 
 class ZKConnectReq(Packet):
     fields_desc=[ SignedIntField("protocolVersion", 0),
@@ -215,7 +211,7 @@ class CreateReq(Packet):
                   SignedIntField("flags", 0) ]
 
     def reply_type(self):
-        return ExistsResp
+        return CreateResp
 
 class DeleteReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
@@ -266,6 +262,13 @@ class SetDataResp(Packet):
 class DeleteResp(Packet):
     pass
 
+class CreateResp(Packet):
+    fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
+                  StrLenField("path", "", length_from=lambda pkt:pkt.len_path) ]
+
+class ExistsResp(Packet):
+    pass
+
 class Child(Packet):
     fields_desc=[ FieldLenField("len_name", None, fmt="I", length_of="name"),
                   StrLenField("name", "", length_from=lambda pkt:pkt.len_name) ]
@@ -296,7 +299,16 @@ class Stat(Packet):
 
 bind_layers( GetDataResp, Stat )
 bind_layers( SetDataResp, Stat )
+bind_layers( ExistsResp, Stat )
 bind_layers( GetChildren2Resp, Stat )
+
+ports = []
+for server in options.servers.split(','):
+    port = server.split(':')[1].strip()
+    ports.append(port)
+    port = int(port)
+    bind_layers( TCP, ZKReq,  dport=port )
+    bind_layers( TCP, ZKResp, sport=port )
 
 def process_req(p):
     if options.debug:
@@ -318,10 +330,13 @@ if __name__ == '__main__':
             p=s.recv(MTU)
             if not p: continue
 
-            if not p.sprintf("%TCP.sport%") == "2181" and not p.sprintf("%TCP.dport%") == "2181":
+            if not p.sprintf("%TCP.sport%") in ports and not p.sprintf("%TCP.dport%") in ports:
                 continue
 
             process_req(p)
     elif options.interface:
-        sniff(iface=options.interface, filter="tcp and ( port 2181 )",
+        filterstring = "tcp"
+        for port in ports:
+            filterstring += " and ( port %s )" % port
+        sniff(iface=options.interface, filter=filterstring,
               prn=lambda p: process_req(p))
