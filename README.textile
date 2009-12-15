@@ -6,7 +6,7 @@ h2. Summary
 
 *This is a work in progress, use at your own risk*
 
-"This project":http://github.com/phunt/zookeeper-digest was inspired by "Maatkit's":http://www.maatkit.org/ mk-query-digest utility. This is essentially a log analysis tool, currently focused on analyzing real time traffic details as captured by "tcpdump":http://www.tcpdump.org/
+"This project":http://github.com/phunt/zookeeper-digest was inspired by "Maatkit's":http://www.maatkit.org/ mk-query-digest utility. This is essentially a protocol analysis tool, currently focused on analyzing real time traffic (via "scapy":http://www.secdev.org/projects/scapy/index.html), or as captured by "tcpdump":http://www.tcpdump.org/ to a file.
 
 h3. What's Apache ZooKeeper?
 
@@ -24,17 +24,42 @@ This project is licensed under the Apache License Version 2.0
 
 h2. Requirements
 
+* "Scapy":http://www.secdev.org/projects/scapy/index.html#download 2.1.0 and later
 * "tcpdump":http://www.tcpdump.org/
 * Python 2.6
 
 h2. Usage
 
+<pre>
+Usage: zookeeper-digest.py [options]
+
+Options:
+  -h, --help            show this help message and exit
+  --servers=SERVERS     comma separated list of host:port
+  -i INTERFACE, --intf=INTERFACE
+                        interface from which to read packets
+  -r READ, --read=READ  pcap file from which to read packets
+  --show                show full packet detail
+  --summary             show summary packet detail
+  --debug               show all pkts
+</pre>
+
+Summary results:
 <code>
-sudo tcpdump -i <interface> port <zk client port> -s 65535  -x -n -q -tttt | ./zookeeper-digest.py
+sudo ./zookeeper-digest.py -i <interface> --servers "localhost:2181" --summary
 </code>
 
-where <zk client port> is typically 2181 and <interface> typically eth0 or ath0 or wlan0, etc...
+Detailed results:
+<code>
+sudo ./zookeeper-digest.py -i <interface> --servers "localhost:2181" --show
+</code>
 
-h2. Future
+Save to a file using tcpdump, decode later:
+<code>
+sudo tcpdump -w <file> -i <interface> -s 1600 "tcp and (port <zk client port>)"
+</code>
+<code>
+./zookeeper-digest.py -r <file> --summary
+</code>
 
-Add support for parsing ZooKeeper log files.
+where &lt;zk client port> is typically 2181 and &lt;interface> typically eth0 or ath0 or wlan0, etc...
