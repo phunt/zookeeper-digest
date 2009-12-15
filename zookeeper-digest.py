@@ -107,6 +107,12 @@ class ZKConnectResp(Packet):
     def mysummary(self):
         return self.sprintf("ZKConnectResp %ZKConnectResp.timeout% %ZKConnectResp.sessionId%"),[ZKResp]
 
+    def add_underlayer(self, underlayer):
+        self.underlayer = underlayer
+        dst = underlayer.underlayer.underlayer.dst
+        dport = underlayer.underlayer.dport
+        sessionids[dst,dport] = self.sessionId
+
 class ZKReqType(Packet):
     fields_desc=[ SignedIntEnumField("xid", 0, {-1:"NOTIFICATION", -2:"PING", -4:"AUTH"}),
                   SignedIntEnumField("type", 0, {-11:"CLOSE",0:"EVENT",1:"CREATE",
@@ -115,6 +121,16 @@ class ZKReqType(Packet):
 
     def mysummary(self):
         return self.sprintf("ZKReqType 0x%x,sessionId%L %ZKReqType.type%"),[ZKReq]
+
+    def add_underlayer(self, underlayer):
+        self.underlayer = underlayer
+        src = underlayer.underlayer.underlayer.src
+        sport = underlayer.underlayer.sport
+        outstanding_reqs[src,sport,self.xid] = self
+        try:
+            self.sessionId = sessionids[src,sport]
+        except:
+            pass
 
 class ZKRespType(Packet):
     fields_desc=[ SignedIntEnumField("xid", 0, {-1:"NOTIFICATION", -2:"PING", -4:"AUTH"}),
@@ -142,6 +158,15 @@ class ZKRespType(Packet):
                     del outstanding_reqs[dst, dport, self.xid]
                     self.type = req.sprintf("%ZKReqType.type%")
         return self.sprintf("ZKRespType 0x%x,sessionId%L %ZKRespType.type%"),[ZKResp]
+
+    def add_underlayer(self, underlayer):
+        self.underlayer = underlayer
+        dst = underlayer.underlayer.underlayer.dst
+        dport = underlayer.underlayer.dport
+        try:
+            self.sessionId = sessionids[dst,dport]
+        except:
+            pass
 
 class GetDataReq(Packet):
     fields_desc=[ FieldLenField("len_path", None, fmt="I", length_of="path"),
@@ -277,27 +302,6 @@ def process_req(p):
     if options.debug:
         if options.summary: print(p.summary())
         elif options.show: print(p.show())
-
-    
-    if p.haslayer(ZKReqType):
-        reqType = p.getlayer(ZKReqType)
-        outstanding_reqs[p[IP].src,p[TCP].sport,reqType.xid] = reqType
-        try:
-            reqType.sessionId = sessionids[reqType.underlayer.underlayer.underlayer.src,
-                                           reqType.underlayer.underlayer.sport]
-        except:
-            pass
-    elif p.haslayer(ZKRespType):
-        respType = p.getlayer(ZKRespType)
-        try:
-            respType.sessionId = sessionids[respType.underlayer.underlayer.underlayer.dst,
-                                            respType.underlayer.underlayer.dport]
-        except:
-            pass
-    elif p.haslayer(ZKConnectResp):
-        cresp = p.getlayer(ZKConnectResp)
-        sessionids[cresp.underlayer.underlayer.underlayer.dst,
-                   cresp.underlayer.underlayer.dport] = cresp.sessionId
 
     if p.haslayer(ZKReq) or p.haslayer(ZKResp) or options.debug:
         if options.summary: print(p.summary())
